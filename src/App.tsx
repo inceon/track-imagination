@@ -25,7 +25,19 @@ const guideToGeo = (guide: MapPoint[], start: GeoPoint): GeoPoint[] => {
   return guide.map(point => ({ lat: start.lat + (anchor.y - point.y) * 0.00043, lng: start.lng + (point.x - anchor.x) * 0.0007 }))
 }
 
-const selectStops = (guide: GeoPoint[], count = 6) => Array.from({ length: count }, (_, index) => guide[Math.round(index * (guide.length - 1) / (count - 1))])
+/**
+ * The sketch is a shape preference, not a list of mandatory streets. Two
+ * evenly spaced anchors keep a loop recognisable while leaving the router
+ * enough freedom to choose connected pedestrian roads between them.
+ */
+const selectGuideAnchors = (guide: GeoPoint[], anchorCount = 2) => {
+  if (guide.length <= anchorCount + 2) return guide
+  return [
+    guide[0],
+    ...Array.from({ length: anchorCount }, (_, index) => guide[Math.round((index + 1) * (guide.length - 1) / (anchorCount + 1))]),
+    guide[guide.length - 1],
+  ]
+}
 const nearestGuideDistance = (point: GeoPoint, guide: GeoPoint[]) => Math.min(...guide.map(candidate => distanceMeters(point, candidate)))
 const evaluateMatch = (route: GeoPoint[], guide: GeoPoint[]) => {
   const deviations = route.map(point => nearestGuideDistance(point, guide))
@@ -132,7 +144,7 @@ function App() {
     }
     setStatus('building')
     setNotice('Matching your outline to walkable roads and trails…')
-    const guidedStops = selectStops(guide)
+    const guidedStops = selectGuideAnchors(guide)
     try {
       const result = await router.buildLoop({ start, guide: guidedStops, requiredWaypoints: manualWaypoints, surface, avoidBusyRoads: safeRoads })
       const match = evaluateMatch(result.points, guide)
