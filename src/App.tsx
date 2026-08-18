@@ -14,7 +14,7 @@ const defaultSketch: MapPoint[] = [
 ]
 const defaultStart: GeoPoint = { lat: 50.4501, lng: 30.5234 }
 const distanceFloor = 1
-const distanceCeiling = 20
+const distanceCeiling = 100
 const distanceStep = 0.5
 const router: RoutingAdapter = new ValhallaRoutingAdapter()
 const fallbackRouter: RoutingAdapter = new SketchFallbackRouter()
