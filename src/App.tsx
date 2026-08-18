@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 're
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { AlertTriangle, Check, ChevronDown, Download, Footprints, Link2, LocateFixed, MousePointer2, Navigation, PencilLine, Plus, Route, RotateCcw, Trash2, WandSparkles, X } from 'lucide-react'
-import { GeoPoint, RouteResult, RoutingAdapter, SketchFallbackRouter, ValhallaRoutingAdapter, distanceMeters } from './routing'
+import { GeoPoint, NetworkRoutingAdapter, OsrmFootRoutingAdapter, RouteResult, RoutingAdapter, ValhallaRoutingAdapter, distanceMeters } from './routing'
 import { MapPoint, parseSvgGuide, pathFromMapPoints } from './svgGuide'
 import { FetchSvgSourceLoader, SvgSourceLoader } from './svgSource'
 
@@ -17,8 +17,7 @@ const defaultStart: GeoPoint = { lat: 50.4501, lng: 30.5234 }
 const distanceFloor = 1
 const distanceCeiling = 100
 const distanceStep = 0.5
-const router: RoutingAdapter = new ValhallaRoutingAdapter()
-const fallbackRouter: RoutingAdapter = new SketchFallbackRouter()
+const router: RoutingAdapter = new NetworkRoutingAdapter([new ValhallaRoutingAdapter(), new OsrmFootRoutingAdapter()])
 const svgSourceLoader: SvgSourceLoader = new FetchSvgSourceLoader()
 
 const guideToGeo = (guide: MapPoint[], start: GeoPoint): GeoPoint[] => {
@@ -135,19 +134,17 @@ function App() {
     setNotice('Matching your outline to walkable roads and trails…')
     const guidedStops = selectStops(guide)
     try {
-      let result: RouteResult
-      try { result = await router.buildLoop({ start, guide: [...manualWaypoints, ...guidedStops], surface, avoidBusyRoads: safeRoads }) }
-      catch { result = await fallbackRouter.buildLoop({ start, guide, surface, avoidBusyRoads: safeRoads }) }
+      const result = await router.buildLoop({ start, guide: guidedStops, requiredWaypoints: manualWaypoints, surface, avoidBusyRoads: safeRoads })
       const match = evaluateMatch(result.points, guide)
       setRoute(result)
       setMismatchSegments(match.mismatches)
       setMatchScore(match.score)
       setStatus('ready')
       const rangeNote = result.distanceMeters / 1000 < minDistance || result.distanceMeters / 1000 > maxDistance ? ' It falls outside the selected distance range.' : ''
-      setNotice(result.isFallback ? `The routing service is unavailable, so this is an offline shape preview.${rangeNote}` : `Route built with a ${match.score}% shape match.${rangeNote}`)
+      setNotice(`Route built with a ${match.score}% shape match.${rangeNote}`)
     } catch {
       setStatus('failed')
-      setNotice('No walkable loop was found for this shape. Try widening the distance range or add waypoints.')
+      setNotice('No walkable route could be built right now. No straight-line preview was drawn. Try again, widen the distance range, or add waypoints.')
     }
   }
 
@@ -223,10 +220,10 @@ function App() {
         <section className="switch-row"><div><strong>Avoid unsuitable roads</strong><small>Prefer pedestrian-friendly, lower-traffic streets</small></div><button className={`switch ${safeRoads ? 'on' : ''}`} onClick={() => setSafeRoads(value => !value)} aria-label="Avoid unsuitable roads"><i /></button></section>
         <button className="build-button" onClick={buildRoute} disabled={status === 'building'}><WandSparkles size={17} />{status === 'building' ? 'Finding paths…' : 'Build route'}</button>
         {notice && <div className={`notice ${status === 'failed' ? 'notice--error' : ''}`}>{status === 'failed' ? <AlertTriangle size={15} /> : <Check size={15} />}<span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice('')}><X size={13} /></button></div>}
-        {route && <div className="match-summary"><div><span>SHAPE MATCH</span><strong>{matchScore ?? 0}%</strong></div><div><span>ROUTE LENGTH</span><strong>{displayedDistance?.toFixed(1)} km</strong></div>{mismatchSegments.some(Boolean) && <p><AlertTriangle size={13} /> Orange sections deviate from the sketch. Add a waypoint near them, then rebuild.</p>}{route.isFallback && <p><AlertTriangle size={13} /> Offline preview only — reconnect to use real road routing.</p>}</div>}
+        {route && <div className="match-summary"><div><span>SHAPE MATCH</span><strong>{matchScore ?? 0}%</strong></div><div><span>ROUTE LENGTH</span><strong>{displayedDistance?.toFixed(1)} km</strong></div>{mismatchSegments.some(Boolean) && <p><AlertTriangle size={13} /> Orange sections deviate from the sketch. Add a waypoint near them, then rebuild.</p>}</div>}
         {status === 'failed' && <div className="failure"><div className="failure-icon"><Route size={19} /></div><div><strong>No route found</strong><p>There is no suitable pedestrian loop with these settings.</p></div><button onClick={() => { setMaxDistance(Math.max(maxDistance, minDistance + 1.5)); setSafeRoads(false); setStatus('ready'); setNotice('Distance range expanded and busy-road avoidance relaxed.') }}><RotateCcw size={14} /> Expand range and allow all roads</button></div>}
       </aside>
-      <section className="route-drawer"><div className="drawer-route"><span className="route-dot"><Navigation size={16} fill="currentColor" /></span><div><p>{route?.isFallback ? 'OFFLINE PREVIEW' : 'LOOP ROUTE'}</p><strong>{displayedDistance ? `${displayedDistance.toFixed(1)} km` : 'Not built'}</strong><span>{displayedDistance ? ` · about ${Math.round(displayedDistance * 6.2)} min` : ' · build from your sketch'}</span></div></div><div className="drawer-actions"><button className={editMode ? 'active' : ''} onClick={() => { setEditMode(value => !value); setStartMode(false) }}><MousePointer2 size={16} />{editMode ? 'Done' : 'Edit route'}</button><button onClick={() => setShowSketch(value => !value)}><PencilLine size={16} />{showSketch ? 'Hide sketch' : 'Show sketch'}</button><button className={offlineSaved ? 'saved-offline' : 'primary'} onClick={() => setOfflineSaved(true)}>{offlineSaved ? <Check size={16} /> : <Download size={16} />}{offlineSaved ? 'Available offline' : 'Save offline'}</button><button className="trash" onClick={clearRoute} aria-label="Clear route"><Trash2 size={17} /></button></div></section>
+      <section className="route-drawer"><div className="drawer-route"><span className="route-dot"><Navigation size={16} fill="currentColor" /></span><div><p>LOOP ROUTE</p><strong>{displayedDistance ? `${displayedDistance.toFixed(1)} km` : 'Not built'}</strong><span>{displayedDistance ? ` · about ${Math.round(displayedDistance * 6.2)} min` : ' · build from your sketch'}</span></div></div><div className="drawer-actions"><button className={editMode ? 'active' : ''} onClick={() => { setEditMode(value => !value); setStartMode(false) }}><MousePointer2 size={16} />{editMode ? 'Done' : 'Edit route'}</button><button onClick={() => setShowSketch(value => !value)}><PencilLine size={16} />{showSketch ? 'Hide sketch' : 'Show sketch'}</button><button className={offlineSaved ? 'saved-offline' : 'primary'} onClick={() => setOfflineSaved(true)}>{offlineSaved ? <Check size={16} /> : <Download size={16} />}{offlineSaved ? 'Available offline' : 'Save offline'}</button><button className="trash" onClick={clearRoute} aria-label="Clear route"><Trash2 size={17} /></button></div></section>
     </section>
   </main>
 }

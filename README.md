@@ -8,9 +8,9 @@ A React application for turning a rough SVG route sketch into a runnable loop.
 
 - Upload an SVG that contains a `path`, `polyline`, or `polygon`; its longest outline becomes the route guide.
 - Choose a start point, distance range, surface preference, and road-safety preference.
-- The app sends sampled guide points to a typed Valhalla pedestrian-routing adapter, which uses OpenStreetMap data to return a walkable loop.
+- The app sends sampled guide points to a typed pedestrian-routing adapter, which uses Valhalla and a pedestrian OSRM fallback to return a walkable loop on the OpenStreetMap path network.
 - The green line is the routed loop, the dashed terracotta line is the sketch, and orange route sections are farther than 180 m from the sketch. Add waypoints there and rebuild to improve alignment.
-- If the public routing service is unavailable, the app makes this clear and shows an offline shape preview instead of claiming that it is a road route.
+- If the public routing service is unavailable, the app reports the failure and does not draw a misleading straight-line route.
 
 ## Run locally
 
