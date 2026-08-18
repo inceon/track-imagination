@@ -16,12 +16,11 @@ const sketchRoute: Point[] = [
   { x: 48, y: 58 }, { x: 42, y: 50 }, { x: 31, y: 49 }, { x: 27, y: 40 }, { x: 35, y: 26 },
   { x: 51, y: 21 }, { x: 67, y: 34 }, { x: 73, y: 49 }, { x: 63, y: 63 }, { x: 48, y: 58 },
 ]
+const distanceFloor = 1
+const distanceCeiling = 20
+const distanceStep = 0.5
 const routePath = (points: Point[]) => points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')
 const km = (value: number) => value.toLocaleString('uk-UA', { maximumFractionDigits: 1 })
-const updateDistance = (value: string, update: (distance: number) => void) => {
-  const distance = Number(value)
-  if (Number.isFinite(distance) && distance >= 1) update(distance)
-}
 
 function App() {
   const [minDistance, setMinDistance] = useState(4.5)
@@ -38,6 +37,9 @@ function App() {
   const [notice, setNotice] = useState('')
   const mapRef = useRef<HTMLDivElement>(null)
   const estimate = useMemo(() => Math.max(minDistance, Math.min(maxDistance, 5.2)), [minDistance, maxDistance])
+  const distanceRangeStyle = {
+    background: `linear-gradient(to right, #dce5da 0%, #dce5da ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da 100%)`,
+  }
   const mapPoint = (event: PointerEvent<HTMLDivElement>) => {
     const bounds = mapRef.current!.getBoundingClientRect()
     return { x: ((event.clientX - bounds.left) / bounds.width) * 100, y: ((event.clientY - bounds.top) / bounds.height) * 100 }
@@ -68,7 +70,13 @@ function App() {
     }, 700)
   }
   const uploadSketch = (event: ChangeEvent<HTMLInputElement>) => {
-    if (!event.target.files?.[0]) return
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (file.type !== 'image/svg+xml' && !file.name.toLowerCase().endsWith('.svg')) {
+      setNotice('Please upload your route sketch as an SVG file.')
+      event.target.value = ''
+      return
+    }
     setShowSketch(true)
     setNotice('Sketch added. It is overlaid on the map as a shape guide.')
   }
@@ -92,8 +100,8 @@ function App() {
       </div>
       <aside className="inspector">
         <div className="inspector-head"><div><p className="eyebrow">NEW ROUTE</p><h1>Sketch your run</h1></div><button className="close-button" aria-label="Close"><X size={18} /></button></div><p className="intro">Your sketch defines the shape; routes only use walkable roads and trails.</p>
-        <div className="sketch-row"><div className="sketch-mini"><svg viewBox="0 0 100 100"><path d={routePath(sketchRoute)} /></svg></div><div><strong>Route shape</strong><small>{showSketch ? 'Overlaid on map' : 'Hidden'}</small></div><label className="file-action"><Plus size={15} /><input aria-label="Add sketch" type="file" accept="image/*" onChange={uploadSketch} /></label></div>
-        <section className="control-section"><div className="section-label"><span>Distance</span><span className="muted">km</span></div><div className="distance-inputs"><label>From<input type="number" min="1" step="0.5" value={minDistance} onChange={event => updateDistance(event.target.value, setMinDistance)} /></label><span>—</span><label>To<input type="number" min="1" step="0.5" value={maxDistance} onChange={event => updateDistance(event.target.value, setMaxDistance)} /></label></div></section>
+        <div className="sketch-row"><div className="sketch-mini"><svg viewBox="0 0 100 100"><path d={routePath(sketchRoute)} /></svg></div><div><strong>Route shape</strong><small>{showSketch ? 'Overlaid on map · SVG only' : 'SVG only'}</small></div><label className="file-action"><Plus size={15} /><input aria-label="Add SVG sketch" type="file" accept="image/svg+xml,.svg" onChange={uploadSketch} /></label></div>
+        <section className="control-section"><div className="section-label"><span>Distance</span><span className="muted">km</span></div><div className="distance-values"><output htmlFor="minimum-distance">From {km(minDistance)} km</output><output htmlFor="maximum-distance">To {km(maxDistance)} km</output></div><div className="distance-slider" style={distanceRangeStyle}><input id="minimum-distance" aria-label="Minimum distance" type="range" min={distanceFloor} max={maxDistance - distanceStep} step={distanceStep} value={minDistance} onChange={event => setMinDistance(Number(event.target.value))} /><input id="maximum-distance" aria-label="Maximum distance" type="range" min={minDistance + distanceStep} max={distanceCeiling} step={distanceStep} value={maxDistance} onChange={event => setMaxDistance(Number(event.target.value))} /></div></section>
         <section className="control-section"><div className="section-label"><span>Surface</span></div><div className="segmented"><button className={surface === 'Paved' ? 'selected' : ''} onClick={() => setSurface('Paved')}>Paved</button><button className={surface === 'Trails' ? 'selected' : ''} onClick={() => setSurface('Trails')}>Trails</button></div></section>
         <section className="switch-row"><div><strong>Avoid unsuitable roads</strong><small>Reduce stretches with heavy traffic</small></div><button className={`switch ${safeRoads ? 'on' : ''}`} onClick={() => setSafeRoads(value => !value)} aria-label="Avoid unsuitable roads"><i /></button></section>
         <button className="build-button" onClick={buildRoute} disabled={status === 'building'}><WandSparkles size={17} />{status === 'building' ? 'Finding paths…' : 'Build route'}</button>{notice && <div className="notice"><Check size={15} />{notice}<button aria-label="Dismiss notification" onClick={() => setNotice('')}><X size={13} /></button></div>}
