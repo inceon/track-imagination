@@ -1,16 +1,16 @@
-# Stride Sketch
+# Track Imagination
 
-Вебзастосунок, що перетворює контрастний ескіз замкненого маршруту на трек для бігу.
+A React application for turning a rough route sketch into a runnable loop.
 
-## Запуск
+## Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Відкрийте адресу, яку покаже Vite. Щоб побудувати маршрут, завантажте контрастний ескіз із темною лінією та натисніть **«Побудувати трек»**. Для довільних маршрутів увімкніть **«Намалювати маршрут»** і проведіть лінію на мапі.
+Open the address printed by Vite. Upload a high-contrast sketch and select **Build route**. Use **Edit route** to add manual waypoints on the map.
 
-## Технології
+## Stack
 
-React, TypeScript, Vite, CSS, SVG та браузерний Canvas API — без серверної залежності для первинного розпізнавання ескізу.
+React, TypeScript, Vite, CSS, and SVG. GitHub Pages deploys automatically on every push to `main`.

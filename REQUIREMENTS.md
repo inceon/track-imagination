@@ -1,33 +1,33 @@
-# Track Imagination — вимоги
+# Track Imagination — Requirements
 
-## Призначення
+## Purpose
 
-Застосунок будує маршрути для бігу за ескізом користувача. Ескіз визначає бажану форму, але підсумковий маршрут має проходити тільки шляхами, якими можливо пройти або пробігти.
+The application builds running routes from a user sketch. The sketch defines the intended shape, while the finished route must only follow paths that are walkable or runnable.
 
-## Побудова маршруту
+## Route construction
 
-- Режим побудови: біг.
-- Джерело мережі прохідних шляхів: OpenStreetMap або сумісний маршрутизатор.
-- Користувач задає стартову точку.
-- Точка старту з ескізу прив'язується до реальної точки в зоні 100–200 м навколо старту користувача.
-- За замовчуванням генератор прагне утворити круговий маршрут, який завершується поблизу старту.
-- Ескіз показується поверх реальної мапи разом із згенерованим маршрутом.
-- Користувач може вручну скоригувати маршрут через конкретні вулиці.
+- Route mode: running.
+- Path-network source: OpenStreetMap or a compatible routing service.
+- The user sets a start point.
+- The sketch start point snaps to a real point 100–200 m from the user's selected start.
+- By default, the generator aims for a loop that ends near the start point.
+- Show the sketch over the real map alongside the generated route.
+- The user can manually adjust the route through particular streets.
 
-## Параметри користувача
+## User settings
 
-- Мінімальна та максимальна дистанція задаються окремо, наприклад 4,5–5 км або 5–10 км.
-- Перемикач: уникати небажаних/небезпечних доріг.
-- Перемикач покриття: асфальт або стежки.
+- Minimum and maximum distance are separate inputs, for example 4.5–5 km or 5–10 km.
+- A toggle to avoid unsuitable or unsafe roads.
+- A surface toggle: paved or trails.
 
-## Невдале побудування
+## Unsuccessful routing
 
-Якщо в заданому діапазоні неможливо створити прийнятний прохідний маршрут, застосунок після спроби пояснює причину та пропонує:
+If an acceptable runnable route cannot be created in the specified range, explain why and offer to:
 
-- розширити діапазон дистанції;
-- змінити тип покриття;
-- вимкнути уникнення небажаних доріг.
+- expand the distance range;
+- change the surface type;
+- disable avoidance of unsuitable roads.
 
-## Офлайн
+## Offline use
 
-Користувач може зберегти готовий маршрут для офлайн-бігу разом із потрібною ділянкою карти.
+The user can save a completed route and the required map area for offline running.
