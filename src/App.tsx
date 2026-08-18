@@ -1,9 +1,10 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { AlertTriangle, Check, ChevronDown, Download, Footprints, LocateFixed, MousePointer2, Navigation, PencilLine, Plus, Route, RotateCcw, Trash2, WandSparkles, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, Download, Footprints, Link2, LocateFixed, MousePointer2, Navigation, PencilLine, Plus, Route, RotateCcw, Trash2, WandSparkles, X } from 'lucide-react'
 import { GeoPoint, RouteResult, RoutingAdapter, SketchFallbackRouter, ValhallaRoutingAdapter, distanceMeters } from './routing'
 import { MapPoint, parseSvgGuide, pathFromMapPoints } from './svgGuide'
+import { FetchSvgSourceLoader, SvgSourceLoader } from './svgSource'
 
 type Surface = 'Paved' | 'Trails'
 type BuildStatus = 'ready' | 'building' | 'failed'
@@ -18,6 +19,7 @@ const distanceCeiling = 100
 const distanceStep = 0.5
 const router: RoutingAdapter = new ValhallaRoutingAdapter()
 const fallbackRouter: RoutingAdapter = new SketchFallbackRouter()
+const svgSourceLoader: SvgSourceLoader = new FetchSvgSourceLoader()
 
 const guideToGeo = (guide: MapPoint[], start: GeoPoint): GeoPoint[] => {
   const anchor = guide[0]
@@ -106,6 +108,8 @@ function App() {
   const [surface, setSurface] = useState<Surface>('Paved')
   const [safeRoads, setSafeRoads] = useState(true)
   const [sketch, setSketch] = useState(defaultSketch)
+  const [svgUrl, setSvgUrl] = useState('')
+  const [isLoadingSvgUrl, setIsLoadingSvgUrl] = useState(false)
   const [start, setStart] = useState(defaultStart)
   const [route, setRoute] = useState<RouteResult | null>(null)
   const [manualWaypoints, setManualWaypoints] = useState<GeoPoint[]>([])
@@ -147,6 +151,23 @@ function App() {
     }
   }
 
+  const applySketchSource = (source: string, successMessage: string) => {
+    try {
+      const parsedSketch = parseSvgGuide(source)
+      setSketch(parsedSketch)
+      setRoute(null)
+      setManualWaypoints([])
+      setMismatchSegments([])
+      setMatchScore(null)
+      setShowSketch(true)
+      setNotice(successMessage)
+      return true
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'The SVG could not be read.')
+      return false
+    }
+  }
+
   const uploadSketch = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -155,18 +176,25 @@ function App() {
       event.target.value = ''
       return
     }
+    applySketchSource(await file.text(), 'Outline read successfully. Build the route to snap it to walkable streets and trails.')
+    event.target.value = ''
+  }
+
+  const loadSketchFromUrl = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!svgUrl.trim()) {
+      setNotice('Enter an SVG URL to load an outline.')
+      return
+    }
+    setIsLoadingSvgUrl(true)
     try {
-      const parsedSketch = parseSvgGuide(await file.text())
-      setSketch(parsedSketch)
-      setRoute(null)
-      setManualWaypoints([])
-      setMismatchSegments([])
-      setMatchScore(null)
-      setShowSketch(true)
-      setNotice('Outline read successfully. Build the route to snap it to walkable streets and trails.')
+      const source = await svgSourceLoader.load(svgUrl.trim())
+      applySketchSource(source, 'Outline loaded from URL. Build the route to snap it to walkable streets and trails.')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'The SVG could not be read.')
-    } finally { event.target.value = '' }
+      setNotice(error instanceof Error ? error.message : 'The SVG could not be loaded.')
+    } finally {
+      setIsLoadingSvgUrl(false)
+    }
   }
 
   const placeOnMap = (point: GeoPoint) => {
@@ -189,7 +217,7 @@ function App() {
       <aside className="inspector">
         <div className="inspector-head"><div><p className="eyebrow">NEW ROUTE</p><h1>Sketch your run</h1></div><button className="close-button" aria-label="Close"><X size={18} /></button></div>
         <p className="intro">Your SVG defines the target shape. The route is then matched to pedestrian-accessible roads and trails.</p>
-        <div className="sketch-row"><div className="sketch-mini"><svg viewBox="0 0 100 100" aria-hidden="true"><path d={pathFromMapPoints(sketch)} /></svg></div><div><strong>Route shape</strong><small>{showSketch ? 'Parsed SVG · shown on the map' : 'Parsed SVG · hidden on the map'}</small></div><label className="file-action" title="Upload SVG outline"><Plus size={15} /><input aria-label="Add SVG sketch" type="file" accept="image/svg+xml,.svg" onChange={uploadSketch} /></label></div>
+        <div className="sketch-row"><div className="sketch-mini"><svg viewBox="0 0 100 100" aria-hidden="true"><path d={pathFromMapPoints(sketch)} /></svg></div><div><strong>Route shape</strong><small>{showSketch ? 'Parsed SVG · shown on the map' : 'Parsed SVG · hidden on the map'}</small></div><label className="file-action" title="Upload SVG outline"><Plus size={15} /><input aria-label="Add SVG sketch" type="file" accept="image/svg+xml,.svg" onChange={uploadSketch} /></label><form className="svg-url-form" onSubmit={loadSketchFromUrl}><label htmlFor="svg-url">SVG URL<input id="svg-url" type="url" value={svgUrl} onChange={event => setSvgUrl(event.target.value)} placeholder="https://example.com/route.svg" /></label><button type="submit" disabled={isLoadingSvgUrl}><Link2 size={14} />{isLoadingSvgUrl ? 'Loading…' : 'Load URL'}</button></form></div>
         <section className="control-section"><div className="section-label"><span>Distance</span><span className="muted">km</span></div><div className="distance-values"><output htmlFor="minimum-distance">From {minDistance.toFixed(1)} km</output><output htmlFor="maximum-distance">To {maxDistance.toFixed(1)} km</output></div><div className="distance-slider" style={distanceRangeStyle}><input id="minimum-distance" aria-label="Minimum distance" type="range" min={distanceFloor} max={maxDistance - distanceStep} step={distanceStep} value={minDistance} onChange={event => setMinDistance(Number(event.target.value))} /><input id="maximum-distance" aria-label="Maximum distance" type="range" min={minDistance + distanceStep} max={distanceCeiling} step={distanceStep} value={maxDistance} onChange={event => setMaxDistance(Number(event.target.value))} /></div></section>
         <section className="control-section"><div className="section-label"><span>Surface</span></div><div className="segmented"><button className={surface === 'Paved' ? 'selected' : ''} onClick={() => setSurface('Paved')}>Paved</button><button className={surface === 'Trails' ? 'selected' : ''} onClick={() => setSurface('Trails')}>Trails</button></div></section>
         <section className="switch-row"><div><strong>Avoid unsuitable roads</strong><small>Prefer pedestrian-friendly, lower-traffic streets</small></div><button className={`switch ${safeRoads ? 'on' : ''}`} onClick={() => setSafeRoads(value => !value)} aria-label="Avoid unsuitable roads"><i /></button></section>
