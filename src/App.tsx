@@ -20,23 +20,51 @@ const distanceStep = 0.5
 const router: RoutingAdapter = new NetworkRoutingAdapter([new ValhallaRoutingAdapter(), new OsrmFootRoutingAdapter()])
 const svgSourceLoader: SvgSourceLoader = new FetchSvgSourceLoader()
 
-const guideToGeo = (guide: MapPoint[], start: GeoPoint): GeoPoint[] => {
+/**
+ * Places the SVG around the selected start point at the requested running
+ * distance.  The old fixed degree conversion made the same sketch roughly
+ * 9 km everywhere, regardless of the distance chooser.
+ */
+const guideToGeo = (guide: MapPoint[], start: GeoPoint, targetDistanceMeters: number): GeoPoint[] => {
   const anchor = guide[0]
-  return guide.map(point => ({ lat: start.lat + (anchor.y - point.y) * 0.00043, lng: start.lng + (point.x - anchor.x) * 0.0007 }))
+  const sketchLength = guide.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - guide[index].x, point.y - guide[index].y), 0)
+  const metresPerSketchUnit = targetDistanceMeters / Math.max(sketchLength, 1)
+  const metresPerLatitudeDegree = 111_132
+  const metresPerLongitudeDegree = 111_320 * Math.cos(start.lat * Math.PI / 180)
+
+  return guide.map(point => ({
+    lat: start.lat + (anchor.y - point.y) * metresPerSketchUnit / metresPerLatitudeDegree,
+    lng: start.lng + (point.x - anchor.x) * metresPerSketchUnit / metresPerLongitudeDegree,
+  }))
 }
 
 /**
- * The sketch is a shape preference, not a list of mandatory streets. Two
- * evenly spaced anchors keep a loop recognisable while leaving the router
- * enough freedom to choose connected pedestrian roads between them.
+ * Preserve the outline with evenly distributed control points.  Two anchors
+ * only describe a triangle, which is why detailed sketches became a jagged
+ * shortcut rather than the requested shape.
  */
-const selectGuideAnchors = (guide: GeoPoint[], anchorCount = 2) => {
-  if (guide.length <= anchorCount + 2) return guide
-  return [
-    guide[0],
-    ...Array.from({ length: anchorCount }, (_, index) => guide[Math.round((index + 1) * (guide.length - 1) / (anchorCount + 1))]),
-    guide[guide.length - 1],
-  ]
+const selectGuideAnchors = (guide: GeoPoint[], anchorCount = 4) => {
+  const isClosed = guide.length > 2 && distanceMeters(guide[0], guide.at(-1)!) < 5
+  const loop = isClosed ? guide.slice(0, -1) : guide
+  if (loop.length <= anchorCount) return loop
+
+  const segmentLengths = loop.map((point, index) => distanceMeters(point, loop[(index + 1) % loop.length]))
+  const perimeter = segmentLengths.reduce((total, length) => total + length, 0)
+  const anchors: GeoPoint[] = []
+  for (let anchorIndex = 0; anchorIndex < anchorCount; anchorIndex += 1) {
+    const wantedDistance = anchorIndex * perimeter / anchorCount
+    let walked = 0
+    let selectedIndex = 0
+    for (let segmentIndex = 0; segmentIndex < segmentLengths.length; segmentIndex += 1) {
+      if (walked + segmentLengths[segmentIndex] >= wantedDistance) {
+        selectedIndex = segmentIndex
+        break
+      }
+      walked += segmentLengths[segmentIndex]
+    }
+    anchors.push(loop[selectedIndex])
+  }
+  return anchors
 }
 const nearestGuideDistance = (point: GeoPoint, guide: GeoPoint[]) => Math.min(...guide.map(candidate => distanceMeters(point, candidate)))
 const evaluateMatch = (route: GeoPoint[], guide: GeoPoint[]) => {
@@ -44,6 +72,12 @@ const evaluateMatch = (route: GeoPoint[], guide: GeoPoint[]) => {
   const mismatches = deviations.slice(0, -1).map((distance, index) => (distance + deviations[index + 1]) / 2 > 180)
   const meanDeviation = deviations.reduce((total, distance) => total + distance, 0) / deviations.length
   return { mismatches, score: Math.max(0, Math.round(100 - meanDeviation / 4)) }
+}
+const routeQuality = (result: RouteResult, matchScore: number, targetDistanceMeters: number) => {
+  const distanceDifference = Math.abs(result.distanceMeters - targetDistanceMeters) / targetDistanceMeters
+  // A close outline comes first, but an attractive 12 km detour is never a
+  // valid answer to a 5 km request.
+  return matchScore - Math.min(45, distanceDifference * 80)
 }
 const pointToLatLng = ({ lat, lng }: GeoPoint): L.LatLngExpression => [lat, lng]
 
@@ -132,7 +166,8 @@ function App() {
   const [notice, setNotice] = useState('Upload a route outline or build from the sample sketch.')
   const [matchScore, setMatchScore] = useState<number | null>(null)
   const [mismatchSegments, setMismatchSegments] = useState<boolean[]>([])
-  const guide = useMemo(() => guideToGeo(sketch, start), [sketch, start])
+  const targetDistanceMeters = ((minDistance + maxDistance) / 2) * 1000
+  const guide = useMemo(() => guideToGeo(sketch, start, targetDistanceMeters), [sketch, start, targetDistanceMeters])
   const displayedDistance = route ? route.distanceMeters / 1000 : null
   const distanceRangeStyle = { background: `linear-gradient(to right, #dce5da 0%, #dce5da ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da 100%)` }
 
@@ -144,19 +179,45 @@ function App() {
     }
     setStatus('building')
     setNotice('Matching your outline to walkable roads and trails…')
-    const guidedStops = selectGuideAnchors(guide)
     try {
-      const result = await router.buildLoop({ start, guide: guidedStops, requiredWaypoints: manualWaypoints, surface, avoidBusyRoads: safeRoads })
-      const match = evaluateMatch(result.points, guide)
-      setRoute(result)
-      setMismatchSegments(match.mismatches)
-      setMatchScore(match.score)
+      // Road networks often make one particular set of guide points awkward.
+      // Compare a few restrained control-point densities and keep the route
+      // that best follows the outline at the requested distance.
+      const anchorCounts = manualWaypoints.length
+        ? [Math.max(3, 5 - manualWaypoints.length)]
+        : [3, 4, 5]
+      const candidates = await Promise.all(anchorCounts.map(async anchorCount => {
+        try {
+          const result = await router.buildLoop({
+            start,
+            guide: selectGuideAnchors(guide, anchorCount),
+            requiredWaypoints: manualWaypoints,
+            surface,
+            avoidBusyRoads: safeRoads,
+          })
+          const match = evaluateMatch(result.points, guide)
+          const quality = routeQuality(result, match.score, targetDistanceMeters)
+          return { result, match, quality }
+        } catch {
+          return null
+        }
+      }))
+      const best = candidates.reduce<{ result: RouteResult, match: ReturnType<typeof evaluateMatch>, quality: number } | null>((currentBest, candidate) => {
+        if (!candidate || (currentBest && candidate.quality <= currentBest.quality)) return currentBest
+        return candidate
+      }, null)
+      if (!best || best.match.score < 55 || best.result.distanceMeters > maxDistance * 1_250 || best.result.distanceMeters < minDistance * 700) {
+        throw new Error('No close shape match')
+      }
+      setRoute(best.result)
+      setMismatchSegments(best.match.mismatches)
+      setMatchScore(best.match.score)
       setStatus('ready')
-      const rangeNote = result.distanceMeters / 1000 < minDistance || result.distanceMeters / 1000 > maxDistance ? ' It falls outside the selected distance range.' : ''
-      setNotice(`Route built with a ${match.score}% shape match.${rangeNote}`)
+      const rangeNote = best.result.distanceMeters / 1000 < minDistance || best.result.distanceMeters / 1000 > maxDistance ? ' It falls outside the selected distance range.' : ''
+      setNotice(`Route built with a ${best.match.score}% shape match.${rangeNote}`)
     } catch {
       setStatus('failed')
-      setNotice('No walkable route could be built right now. No straight-line preview was drawn. Try again, widen the distance range, or add waypoints.')
+      setNotice('No route followed this outline closely enough. No misleading shortcut was shown. Try a wider range or add a waypoint where the shape must be preserved.')
     }
   }
 

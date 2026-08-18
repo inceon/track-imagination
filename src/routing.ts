@@ -92,7 +92,10 @@ const orderedStops = (start: GeoPoint, guide: GeoPoint[], requiredWaypoints: Geo
     .sort((first, second) => first.order - second.order || first.priority - second.priority)
     .map(({ point }) => point)
 
-  const interiorStops = uniqueStops(stops).filter(point => distanceMeters(start, point) > 80).slice(0, 10)
+  // Every manually placed waypoint is a promise to the runner.  Do not cap
+  // this list after ordering it, or a waypoint near the end of the outline
+  // can disappear without the UI telling them.
+  const interiorStops = uniqueStops(stops).filter(point => distanceMeters(start, point) > 80)
   return [start, ...interiorStops, start]
 }
 

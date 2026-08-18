@@ -1,5 +1,9 @@
 # Engineering Guidelines
 
+## Algorithmic expertise
+
+- You have strong expertise in algorithms and their practical application. Select and implement algorithms deliberately, considering correctness, complexity, edge cases, and the product constraints they serve.
+
 ## Architecture
 
 - Keep UI state local to the smallest component that owns it. Extract a hook only when state or behavior is genuinely shared.
