@@ -78,6 +78,19 @@ const pathDistance = (points: GeoPoint[]) => points.slice(1).reduce((total, poin
 
 const uniqueStops = (points: GeoPoint[]) => points.filter((point, index) => index === 0 || distanceMeters(point, points[index - 1]) > 80)
 
+/** Adds samples at a GPS-like cadence so map matching can follow the complete outline. */
+const densifyShape = (points: GeoPoint[], maximumGapMeters = 40) => points.slice(1).flatMap((end, index) => {
+  const start = points[index]
+  const steps = Math.max(1, Math.ceil(distanceMeters(start, end) / maximumGapMeters))
+  return Array.from({ length: steps }, (_, step) => {
+    const progress = step / steps
+    return {
+      lat: start.lat + (end.lat - start.lat) * progress,
+      lng: start.lng + (end.lng - start.lng) * progress,
+    }
+  })
+}).concat(points.at(-1) ?? [])
+
 const closestGuideIndex = (point: GeoPoint, guide: GeoPoint[]) => guide.reduce(
   (closest, candidate, index) => distanceMeters(point, candidate) < closest.distance ? { index, distance: distanceMeters(point, candidate) } : closest,
   { index: 0, distance: Number.POSITIVE_INFINITY },
@@ -102,17 +115,22 @@ const orderedStops = (start: GeoPoint, guide: GeoPoint[], requiredWaypoints: Geo
 /** A typed public-routing adapter. It asks Valhalla for pedestrian paths, never from a React component. */
 export class ValhallaRoutingAdapter implements RoutingAdapter {
   async buildLoop({ start, guide, requiredWaypoints, surface, avoidBusyRoads }: RouteRequest): Promise<RouteResult> {
-    const stops = orderedStops(start, guide, requiredWaypoints)
+    // Keep each desired edge short enough that the router cannot cut across a
+    // large section of the sketch between two distant corners.
+    const stops = orderedStops(start, densifyShape(guide, 180), requiredWaypoints)
     if (stops.length < 3) throw new Error('Add a larger route outline or at least one waypoint.')
 
     const response = await fetch('https://valhalla1.openstreetmap.de/route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        locations: stops.map((point, index) => ({
+        locations: stops.map(point => ({
           lat: point.lat,
           lon: point.lng,
-          type: index === 0 || index === stops.length - 1 ? 'break' : 'through',
+          // Every outline control is a leg boundary. `through` prohibits a
+          // turn-around at the snapped street and can turn a small corner in
+          // the sketch into a multi-kilometre detour.
+          type: 'break',
         })),
         costing: 'pedestrian',
         costing_options: {

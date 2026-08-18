@@ -19,6 +19,8 @@ const distanceCeiling = 100
 const distanceStep = 0.5
 const router: RoutingAdapter = new NetworkRoutingAdapter([new ValhallaRoutingAdapter(), new OsrmFootRoutingAdapter()])
 const svgSourceLoader: SvgSourceLoader = new FetchSvgSourceLoader()
+const initialGuideScale = 0.47
+const maximumScaleAttempts = 3
 
 /**
  * Places the SVG around the selected start point at the requested running
@@ -38,46 +40,29 @@ const guideToGeo = (guide: MapPoint[], start: GeoPoint, targetDistanceMeters: nu
   }))
 }
 
-/**
- * Preserve the outline with evenly distributed control points.  Two anchors
- * only describe a triangle, which is why detailed sketches became a jagged
- * shortcut rather than the requested shape.
- */
-const selectGuideAnchors = (guide: GeoPoint[], anchorCount = 4) => {
-  const isClosed = guide.length > 2 && distanceMeters(guide[0], guide.at(-1)!) < 5
-  const loop = isClosed ? guide.slice(0, -1) : guide
-  if (loop.length <= anchorCount) return loop
-
-  const segmentLengths = loop.map((point, index) => distanceMeters(point, loop[(index + 1) % loop.length]))
-  const perimeter = segmentLengths.reduce((total, length) => total + length, 0)
-  const anchors: GeoPoint[] = []
-  for (let anchorIndex = 0; anchorIndex < anchorCount; anchorIndex += 1) {
-    const wantedDistance = anchorIndex * perimeter / anchorCount
-    let walked = 0
-    let selectedIndex = 0
-    for (let segmentIndex = 0; segmentIndex < segmentLengths.length; segmentIndex += 1) {
-      if (walked + segmentLengths[segmentIndex] >= wantedDistance) {
-        selectedIndex = segmentIndex
-        break
-      }
-      walked += segmentLengths[segmentIndex]
-    }
-    anchors.push(loop[selectedIndex])
-  }
-  return anchors
-}
-const nearestGuideDistance = (point: GeoPoint, guide: GeoPoint[]) => Math.min(...guide.map(candidate => distanceMeters(point, candidate)))
+const resamplePath = (points: GeoPoint[], spacingMeters = 35) => points.slice(1).flatMap((end, index) => {
+  const start = points[index]
+  const steps = Math.max(1, Math.ceil(distanceMeters(start, end) / spacingMeters))
+  return Array.from({ length: steps }, (_, step) => {
+    const progress = step / steps
+    return { lat: start.lat + (end.lat - start.lat) * progress, lng: start.lng + (end.lng - start.lng) * progress }
+  })
+}).concat(points.at(-1) ?? [])
+const nearestPathDistance = (point: GeoPoint, path: GeoPoint[]) => Math.min(...path.map(candidate => distanceMeters(point, candidate)))
 const evaluateMatch = (route: GeoPoint[], guide: GeoPoint[]) => {
-  const deviations = route.map(point => nearestGuideDistance(point, guide))
-  const mismatches = deviations.slice(0, -1).map((distance, index) => (distance + deviations[index + 1]) / 2 > 180)
-  const meanDeviation = deviations.reduce((total, distance) => total + distance, 0) / deviations.length
-  return { mismatches, score: Math.max(0, Math.round(100 - meanDeviation / 4)) }
-}
-const routeQuality = (result: RouteResult, matchScore: number, targetDistanceMeters: number) => {
-  const distanceDifference = Math.abs(result.distanceMeters - targetDistanceMeters) / targetDistanceMeters
-  // A close outline comes first, but an attractive 12 km detour is never a
-  // valid answer to a 5 km request.
-  return matchScore - Math.min(45, distanceDifference * 80)
+  const sampledRoute = resamplePath(route)
+  const sampledGuide = resamplePath(guide)
+  const deviations = sampledRoute.map(point => nearestPathDistance(point, sampledGuide))
+  const guideDeviations = sampledGuide.map(point => nearestPathDistance(point, sampledRoute))
+  const rawDeviations = route.map(point => nearestPathDistance(point, sampledGuide))
+  const mismatches = rawDeviations.slice(0, -1).map((distance, index) => (distance + rawDeviations[index + 1]) / 2 > 180)
+  const meanDeviation = [...deviations, ...guideDeviations].reduce((total, distance) => total + distance, 0) / (deviations.length + guideDeviations.length)
+  const withinTolerance = (distances: number[]) => distances.filter(distance => distance <= 100).length / distances.length
+  const coverage = (withinTolerance(deviations) + withinTolerance(guideDeviations)) / 2
+  const precision = Math.max(0, 1 - meanDeviation / 160)
+  const closesLoop = distanceMeters(route[0], route.at(-1)!) <= 100
+  const score = Math.max(0, Math.round(100 * (coverage * 0.7 + precision * 0.3) * (closesLoop ? 1 : 0.35)))
+  return { mismatches, score, coverage, closesLoop }
 }
 const pointToLatLng = ({ lat, lng }: GeoPoint): L.LatLngExpression => [lat, lng]
 
@@ -157,6 +142,7 @@ function App() {
   const [isLoadingSvgUrl, setIsLoadingSvgUrl] = useState(false)
   const [start, setStart] = useState(defaultStart)
   const [route, setRoute] = useState<RouteResult | null>(null)
+  const [builtGuide, setBuiltGuide] = useState<GeoPoint[] | null>(null)
   const [manualWaypoints, setManualWaypoints] = useState<GeoPoint[]>([])
   const [editMode, setEditMode] = useState(false)
   const [startMode, setStartMode] = useState(false)
@@ -167,7 +153,8 @@ function App() {
   const [matchScore, setMatchScore] = useState<number | null>(null)
   const [mismatchSegments, setMismatchSegments] = useState<boolean[]>([])
   const targetDistanceMeters = ((minDistance + maxDistance) / 2) * 1000
-  const guide = useMemo(() => guideToGeo(sketch, start, targetDistanceMeters), [sketch, start, targetDistanceMeters])
+  const guide = useMemo(() => guideToGeo(sketch, start, targetDistanceMeters * initialGuideScale), [sketch, start, targetDistanceMeters])
+  const displayedGuide = builtGuide ?? guide
   const displayedDistance = route ? route.distanceMeters / 1000 : null
   const distanceRangeStyle = { background: `linear-gradient(to right, #dce5da 0%, #dce5da ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((minDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #218159 ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da ${((maxDistance - distanceFloor) / (distanceCeiling - distanceFloor)) * 100}%, #dce5da 100%)` }
 
@@ -180,41 +167,29 @@ function App() {
     setStatus('building')
     setNotice('Matching your outline to walkable roads and trails…')
     try {
-      // Road networks often make one particular set of guide points awkward.
-      // Compare a few restrained control-point densities and keep the route
-      // that best follows the outline at the requested distance.
-      const anchorCounts = manualWaypoints.length
-        ? [Math.max(3, 5 - manualWaypoints.length)]
-        : [3, 4, 5]
-      const candidates = await Promise.all(anchorCounts.map(async anchorCount => {
-        try {
-          const result = await router.buildLoop({
-            start,
-            guide: selectGuideAnchors(guide, anchorCount),
-            requiredWaypoints: manualWaypoints,
-            surface,
-            avoidBusyRoads: safeRoads,
-          })
-          const match = evaluateMatch(result.points, guide)
-          const quality = routeQuality(result, match.score, targetDistanceMeters)
-          return { result, match, quality }
-        } catch {
-          return null
-        }
-      }))
-      const best = candidates.reduce<{ result: RouteResult, match: ReturnType<typeof evaluateMatch>, quality: number } | null>((currentBest, candidate) => {
-        if (!candidate || (currentBest && candidate.quality <= currentBest.quality)) return currentBest
-        return candidate
-      }, null)
-      if (!best || best.match.score < 55 || best.result.distanceMeters > maxDistance * 1_250 || best.result.distanceMeters < minDistance * 700) {
+      let scale = initialGuideScale
+      let best: { guide: GeoPoint[], result: RouteResult, match: ReturnType<typeof evaluateMatch>, quality: number } | null = null
+      for (let attempt = 0; attempt < maximumScaleAttempts; attempt += 1) {
+        const candidateGuide = guideToGeo(sketch, start, targetDistanceMeters * scale)
+        const result = await router.buildLoop({ start, guide: candidateGuide, requiredWaypoints: manualWaypoints, surface, avoidBusyRoads: safeRoads })
+        const match = evaluateMatch(result.points, candidateGuide)
+        const distanceError = Math.abs(result.distanceMeters - targetDistanceMeters) / targetDistanceMeters
+        const quality = match.score - Math.min(50, distanceError * 100)
+        if (!best || quality > best.quality) best = { guide: candidateGuide, result, match, quality }
+        const isWithinRange = result.distanceMeters >= minDistance * 1000 && result.distanceMeters <= maxDistance * 1000
+        if (isWithinRange && match.score >= 75) break
+        const correction = Math.max(0.6, Math.min(1.45, targetDistanceMeters / result.distanceMeters))
+        scale *= correction
+      }
+      if (!best || best.match.score < 75 || best.result.distanceMeters > maxDistance * 1000 || best.result.distanceMeters < minDistance * 1000) {
         throw new Error('No close shape match')
       }
       setRoute(best.result)
+      setBuiltGuide(best.guide)
       setMismatchSegments(best.match.mismatches)
       setMatchScore(best.match.score)
       setStatus('ready')
-      const rangeNote = best.result.distanceMeters / 1000 < minDistance || best.result.distanceMeters / 1000 > maxDistance ? ' It falls outside the selected distance range.' : ''
-      setNotice(`Route built with a ${best.match.score}% shape match.${rangeNote}`)
+      setNotice(`Route built with a ${best.match.score}% shape match.`)
     } catch {
       setStatus('failed')
       setNotice('No route followed this outline closely enough. No misleading shortcut was shown. Try a wider range or add a waypoint where the shape must be preserved.')
@@ -226,6 +201,7 @@ function App() {
       const parsedSketch = parseSvgGuide(source)
       setSketch(parsedSketch)
       setRoute(null)
+      setBuiltGuide(null)
       setManualWaypoints([])
       setMismatchSegments([])
       setMatchScore(null)
@@ -269,26 +245,26 @@ function App() {
 
   const placeOnMap = (point: GeoPoint) => {
     if (startMode) {
-      setStart(point); setStartMode(false); setRoute(null); setMismatchSegments([]); setMatchScore(null)
+      setStart(point); setStartMode(false); setRoute(null); setBuiltGuide(null); setMismatchSegments([]); setMatchScore(null)
       setNotice('Start point set. Build the loop when you are ready.')
     } else if (editMode) {
-      setManualWaypoints(current => [...current, point]); setRoute(null); setMismatchSegments([]); setMatchScore(null)
+      setManualWaypoints(current => [...current, point]); setRoute(null); setBuiltGuide(null); setMismatchSegments([]); setMatchScore(null)
       setNotice('Waypoint added. Build the route to include it on the next pass.')
     }
   }
-  const clearRoute = () => { setRoute(null); setMismatchSegments([]); setMatchScore(null); setManualWaypoints([]); setNotice('Route and waypoints cleared. Your sketch is still available.') }
+  const clearRoute = () => { setRoute(null); setBuiltGuide(null); setMismatchSegments([]); setMatchScore(null); setManualWaypoints([]); setNotice('Route and waypoints cleared. Your sketch is still available.') }
 
   return <main className="app-shell">
     <header className="topbar"><a className="wordmark" href="#workspace"><span className="wordmark-mark"><Route size={18} /></span>track<span>imagination</span></a><div className="mode-label"><Footprints size={15} /> Running <ChevronDown size={14} /></div><div className="topbar-actions"><button className="icon-button" aria-label="Set start point" onClick={() => { setStartMode(true); setEditMode(false) }}><LocateFixed size={18} /></button><button className="profile">IK</button></div></header>
     <section className="workspace" id="workspace">
-      <RouteMap route={route} guide={guide} showSketch={showSketch} start={start} manualWaypoints={manualWaypoints} mismatchSegments={mismatchSegments} editMode={editMode} startMode={startMode} onMapClick={placeOnMap} />
+      <RouteMap route={route} guide={displayedGuide} showSketch={showSketch} start={start} manualWaypoints={manualWaypoints} mismatchSegments={mismatchSegments} editMode={editMode} startMode={startMode} onMapClick={placeOnMap} />
       {showSketch && <span className="sketch-label"><PencilLine size={13} /> Your sketch</span>}
       {(startMode || editMode) && <div className="map-instruction">{startMode ? <><LocateFixed size={16} /> Click the map to set your start point</> : <><Plus size={16} /> Click a street to add a required waypoint</>}</div>}
       <aside className="inspector">
         <div className="inspector-head"><div><p className="eyebrow">NEW ROUTE</p><h1>Sketch your run</h1></div><button className="close-button" aria-label="Close"><X size={18} /></button></div>
         <p className="intro">Your SVG defines the target shape. The route is then matched to pedestrian-accessible roads and trails.</p>
         <div className="sketch-row"><div className="sketch-mini"><svg viewBox="0 0 100 100" aria-hidden="true"><path d={pathFromMapPoints(sketch)} /></svg></div><div><strong>Route shape</strong><small>{showSketch ? 'Parsed SVG · shown on the map' : 'Parsed SVG · hidden on the map'}</small></div><label className="file-action" title="Upload SVG outline"><Plus size={15} /><input aria-label="Add SVG sketch" type="file" accept="image/svg+xml,.svg" onChange={uploadSketch} /></label><form className="svg-url-form" onSubmit={loadSketchFromUrl}><label htmlFor="svg-url">SVG URL<input id="svg-url" type="url" value={svgUrl} onChange={event => setSvgUrl(event.target.value)} placeholder="https://example.com/route.svg" /></label><button type="submit" disabled={isLoadingSvgUrl}><Link2 size={14} />{isLoadingSvgUrl ? 'Loading…' : 'Load URL'}</button></form></div>
-        <section className="control-section"><div className="section-label"><span>Distance</span><span className="muted">km</span></div><div className="distance-values"><output htmlFor="minimum-distance">From {minDistance.toFixed(1)} km</output><output htmlFor="maximum-distance">To {maxDistance.toFixed(1)} km</output></div><div className="distance-slider" style={distanceRangeStyle}><input id="minimum-distance" aria-label="Minimum distance" type="range" min={distanceFloor} max={maxDistance - distanceStep} step={distanceStep} value={minDistance} onChange={event => setMinDistance(Number(event.target.value))} /><input id="maximum-distance" aria-label="Maximum distance" type="range" min={minDistance + distanceStep} max={distanceCeiling} step={distanceStep} value={maxDistance} onChange={event => setMaxDistance(Number(event.target.value))} /></div></section>
+        <section className="control-section"><div className="section-label"><span>Distance</span><span className="muted">km</span></div><div className="distance-values"><output htmlFor="minimum-distance">From {minDistance.toFixed(1)} km</output><output htmlFor="maximum-distance">To {maxDistance.toFixed(1)} km</output></div><div className="distance-slider" style={distanceRangeStyle}><input id="minimum-distance" aria-label="Minimum distance" type="range" min={distanceFloor} max={maxDistance - distanceStep} step={distanceStep} value={minDistance} onChange={event => { setMinDistance(Number(event.target.value)); setRoute(null); setBuiltGuide(null); setMismatchSegments([]); setMatchScore(null) }} /><input id="maximum-distance" aria-label="Maximum distance" type="range" min={minDistance + distanceStep} max={distanceCeiling} step={distanceStep} value={maxDistance} onChange={event => { setMaxDistance(Number(event.target.value)); setRoute(null); setBuiltGuide(null); setMismatchSegments([]); setMatchScore(null) }} /></div></section>
         <section className="control-section"><div className="section-label"><span>Surface</span></div><div className="segmented"><button className={surface === 'Paved' ? 'selected' : ''} onClick={() => setSurface('Paved')}>Paved</button><button className={surface === 'Trails' ? 'selected' : ''} onClick={() => setSurface('Trails')}>Trails</button></div></section>
         <section className="switch-row"><div><strong>Avoid unsuitable roads</strong><small>Prefer pedestrian-friendly, lower-traffic streets</small></div><button className={`switch ${safeRoads ? 'on' : ''}`} onClick={() => setSafeRoads(value => !value)} aria-label="Avoid unsuitable roads"><i /></button></section>
         <button className="build-button" onClick={buildRoute} disabled={status === 'building'}><WandSparkles size={17} />{status === 'building' ? 'Finding paths…' : 'Build route'}</button>
