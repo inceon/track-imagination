@@ -2,6 +2,8 @@
 
 A React application for turning a rough SVG route sketch into a runnable loop.
 
+**Live app:** [inceon.github.io/track-imagination](https://inceon.github.io/track-imagination/)
+
 ## How it works
 
 - Upload an SVG that contains a `path`, `polyline`, or `polygon`; its longest outline becomes the route guide.
